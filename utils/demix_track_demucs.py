@@ -5,7 +5,7 @@ import numpy as np
 from tqdm.auto import tqdm
 
 
-def demix_track_demucs(config, model, mix, device, pbar=False):
+def demix_track_demucs(config, model, mix, device, pbar=False, progress_bar=None):
     S = len(config.training.instruments)
     C = config.training.samplerate * config.training.segment
     N = config.inference.num_overlap
@@ -21,12 +21,20 @@ def demix_track_demucs(config, model, mix, device, pbar=False):
             i = 0
             batch_data = []
             batch_locations = []
-            progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+            # progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+
+            total_iterations = (mix.shape[1] + step - 1) // step
+            current_iteration = 0
 
             while i < mix.shape[1]:
                 # print(i, i + C, mix.shape[1])
                 part = mix[:, i:i + C].to(device)
                 length = part.shape[-1]
+
+                if progress_bar:
+                    progress_bar.set(min(1.0, current_iteration / total_iterations))
+                    current_iteration += 1
+
                 if length < C:
                     part = nn.functional.pad(input=part, pad=(0, C - length, 0, 0), mode='constant', value=0)
                 batch_data.append(part)
@@ -43,11 +51,11 @@ def demix_track_demucs(config, model, mix, device, pbar=False):
                     batch_data = []
                     batch_locations = []
 
-                if progress_bar:
-                    progress_bar.update(step)
+                # if progress_bar:
+                    # progress_bar.update(step)
 
-            if progress_bar:
-                progress_bar.close()
+            # if progress_bar:
+                # progress_bar.close()
 
             estimated_sources = result / counter
             estimated_sources = estimated_sources.cpu().numpy()

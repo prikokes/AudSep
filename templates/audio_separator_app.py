@@ -5,7 +5,6 @@
 import customtkinter as ctk
 import torch
 import torchaudio
-import soundfile as sf
 import threading
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from model_loaders import htdemucs_loader
 from omegaconf import OmegaConf
 from utils.demix_track_demucs import demix_track_demucs
 
-from .audio_player import AudioPlayer
+from .audio_player import (AudioPlayer)
 
 
 class AudioSeparatorApp(ctk.CTk):
@@ -100,11 +99,15 @@ class AudioSeparatorApp(ctk.CTk):
     def _process_audio_thread(self):
         try:
             self.after(0, lambda: self.status_label.configure(text="Разделяем"))
+            self.progress_bar.set(0)
+
             self._separate_audio()
 
+            self.progress_bar.set(1)
             self.after(0, lambda: self.status_label.configure(text="Готово"))
         except Exception as e:
-            self.after(0, lambda: self.status_label.configure(text=f"Ошибка: {str(e)}"))
+            print(e)
+            self.after(0, lambda: self.status_label.configure(text=f"Ошибка: {e}"))
         finally:
             self.is_processing = False
             self.after(0, lambda: self.select_button.configure(state="normal"))
@@ -116,9 +119,11 @@ class AudioSeparatorApp(ctk.CTk):
         device = torch.device("cpu")
         config = OmegaConf.load("./configs/config_htdemucs_6stems.yaml")
 
-        model = htdemucs_loader.HTDemucsLoader.load('6s', device, config)
+        loader = htdemucs_loader.HTDemucsLoader()
 
-        waveform = demix_track_demucs(config, model, mix, device, pbar=False)
+        model = loader.load('6s', device, config)
+
+        waveform = demix_track_demucs(config, model, mix, device, pbar=False, progress_bar=self.progress_bar)
 
         vocals = torch.tensor(waveform['vocals']).float()
         bass = torch.tensor(waveform['bass']).float()
@@ -139,8 +144,8 @@ class AudioSeparatorApp(ctk.CTk):
             'piano': {'data': piano, 'sr': sample_rate}
         }
 
-        print(guitar.numpy().dtype)
-        sf.write("guitar.wav", guitar.numpy(), 44100)
+        # print(guitar.numpy().dtype)
+        # sf.write("piano.wav", piano.numpy(), 44100)
 
         self.open_player()
 
