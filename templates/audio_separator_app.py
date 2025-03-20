@@ -156,7 +156,7 @@ class AudioSeparatorApp(ctk.CTk):
             player_window.geometry("800x600")
             player_window.grab_set()
 
-            player = AudioPlayer(player_window, self.separated_tracks)
+            player = AudioPlayer(player_window, self.separated_tracks, self.selected_file)
 
         self.after_idle(create_player)
 
