@@ -15,6 +15,7 @@ from models.htdemucs import HTDemucs
 class HTDemucsLoader:
     WEIGHTS_PATH = './weights/ht_demucs_v4.th'
     WEIGHTS_URL = 'https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/5c90dfd2-34c22ccb.th'
+
     def __init__(self):
         pass
 

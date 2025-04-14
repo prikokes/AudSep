@@ -6,13 +6,20 @@ import customtkinter as ctk
 import torch
 import torchaudio
 import threading
+import yaml
+
 from pathlib import Path
+
+from ml_collections import ConfigDict
 
 from model_loaders import htdemucs_loader
 from omegaconf import OmegaConf
 from utils.demix_track_demucs import demix_track_demucs
 
 from .audio_player import (AudioPlayer)
+
+from model_loaders.mel_band_roformer_loader import MelBandRoformerLoader
+from utils.demix_track import demix_track
 
 
 class AudioSeparatorApp(ctk.CTk):
@@ -28,6 +35,38 @@ class AudioSeparatorApp(ctk.CTk):
         self.main_frame.pack(pady=20, padx=20, fill="both", expand=True)
 
         self.is_processing = False
+
+        self.model_frame = ctk.CTkFrame(master=self.main_frame)
+        self.model_frame.pack(pady=10, padx=20, fill="x")
+
+        self.model_label = ctk.CTkLabel(
+            self.model_frame,
+            text="Выбери модель:"
+        )
+        self.model_label.pack(side="left", padx=(0, 10))
+
+        self.available_models = {
+            "HTDemucs (6 стемов)": {
+                "loader": htdemucs_loader.HTDemucsLoader(),
+                "config": "./configs/config_htdemucs_6stems.yaml",
+                "model_id": "6s",
+                "processor": self._process_htdemucs
+            },
+            "MelBand RoFormer": {
+                "loader": MelBandRoformerLoader,
+                "config": "./configs/config_vocals_mel_band_roformer_kj.yaml",
+                "model_id": "base",
+                "processor": self._process_melband_roformer
+            }
+        }
+
+        self.model_var = ctk.StringVar(value="HTDemucs (6 стемов)")
+        self.model_dropdown = ctk.CTkOptionMenu(
+            self.model_frame,
+            values=list(self.available_models.keys()),
+            variable=self.model_var
+        )
+        self.model_dropdown.pack(side="left", fill="x", expand=True)
 
         self.select_button = ctk.CTkButton(
             self.main_frame,
@@ -49,7 +88,7 @@ class AudioSeparatorApp(ctk.CTk):
         self.process_button = ctk.CTkButton(
             self.main_frame,
             text="Разделить",
-            command=self.process_audio,
+            command=self._separate_audio,
             state="disabled"
         )
         self.process_button.pack(pady=10, padx=20)
@@ -61,7 +100,6 @@ class AudioSeparatorApp(ctk.CTk):
         self.status_label.pack(pady=10)
 
         self.selected_file = None
-
         self.separated_tracks = {}
 
     def select_file(self):
@@ -115,39 +153,51 @@ class AudioSeparatorApp(ctk.CTk):
 
     def _separate_audio(self):
         mix, sample_rate = torchaudio.load(self.selected_file)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        device = torch.device("cpu")
-        config = OmegaConf.load("./configs/config_htdemucs_6stems.yaml")
+        selected_model_name = self.model_var.get()
+        model_info = self.available_models[selected_model_name]
 
-        loader = htdemucs_loader.HTDemucsLoader()
+        processor = model_info["processor"]
+        self.separated_tracks = processor(mix, sample_rate, device, model_info)
 
-        model = loader.load('6s', device, config)
+        self.open_player()
+
+    def _process_htdemucs(self, mix, sample_rate, device, model_info):
+        loader = model_info["loader"]
+
+        config = OmegaConf.load(model_info["config"])
+
+        model = loader.load(model_info["model_id"], device, config)
 
         waveform = demix_track_demucs(config, model, mix, device, pbar=False, progress_bar=self.progress_bar)
 
-        vocals = torch.tensor(waveform['vocals']).float()
-        bass = torch.tensor(waveform['bass']).float()
-        drums = torch.tensor(waveform['drums']).float()
-        other = torch.tensor(waveform['other']).float()
-        guitar = torch.tensor(waveform['guitar']).float()
-        piano = torch.tensor(waveform['piano']).float()
+        tracks = {}
+        for stem in config.training.instruments:
+            tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
 
-        output_dir = self.selected_file.parent / "separated"
-        output_dir.mkdir(exist_ok=True)
+        return tracks
 
-        self.separated_tracks = {
-            'vocals': {'data': vocals, 'sr': sample_rate},
-            'bass': {'data': bass, 'sr': sample_rate},
-            'drums': {'data': drums, 'sr': sample_rate},
-            'other': {'data': other, 'sr': sample_rate},
-            'guitar': {'data': guitar, 'sr': sample_rate},
-            'piano': {'data': piano, 'sr': sample_rate}
-        }
+    def _process_melband_roformer(self, mix, sample_rate, device, model_info):
+        self.status_label.configure(text="Загрузка MelBand RoFormer...")
 
-        # print(guitar.numpy().dtype)
-        # sf.write("piano.wav", piano.numpy(), 44100)
+        with open(model_info['config'], 'r') as f:
+            config_dict = yaml.load(f, Loader=yaml.SafeLoader)
 
-        self.open_player()
+        print("I am here")
+
+        config = ConfigDict(config_dict)
+
+        loader = model_info["loader"]()
+        model = loader.load(model_info["model_id"], device, config)
+
+        waveform = demix_track(config, model, mix, device, pbar=False)
+
+        tracks = {}
+        for stem in waveform.keys():
+            tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
+
+        return tracks
 
     def open_player(self):
         def create_player():
