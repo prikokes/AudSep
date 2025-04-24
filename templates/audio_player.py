@@ -25,20 +25,17 @@ class AudioPlayer:
 
         self.waveform_canvases = {}
         self.waveform_images = {}
-        self.waveform_originals = {}  # Сохраняем оригинальные изображения
+        self.waveform_originals = {}
         self.position_markers = {}
 
-        # Добавляем переменные для троттлинга обновлений
         self.resize_timer = None
         self.last_resize_time = 0
-        self.resize_throttle_ms = 200  # Обновлять не чаще чем раз в 200 мс
+        self.resize_throttle_ms = 200
         self.resize_in_progress = False
 
-        # Устанавливаем режим ресайза для лучшей производительности
-        self.resize_method = Image.BILINEAR  # Быстрее чем LANCZOS
+        self.resize_method = Image.BILINEAR
 
-        # Увеличим базовый размер для отрисовки waveform
-        self.base_waveform_width = 1500  # Большой размер для качественного изображения
+        self.base_waveform_width = 1500
         self.base_waveform_height = 300
 
         self.player_frame = ctk.CTkFrame(root)
@@ -62,6 +59,25 @@ class AudioPlayer:
             command=self.stop_all
         )
         self.stop_button.pack(side="left", padx=5)
+
+        self.volume_label = ctk.CTkLabel(
+            self.controls_frame,
+            text="Громкость:",
+            width=80
+        )
+        self.volume_label.pack(side="left", padx=(15, 5))
+
+        self.master_volume = ctk.CTkSlider(
+            self.controls_frame,
+            from_=0,
+            to=1,
+            width=120,
+            command=self.update_master_volume
+        )
+        self.master_volume.set(1.0)
+        self.master_volume.pack(side="left", padx=5)
+
+        self.master_volume_value = 1.0
 
         self.save_button = ctk.CTkButton(
             self.controls_frame,
@@ -135,6 +151,14 @@ class AudioPlayer:
                 os.remove(temp_file)
             except:
                 pass
+
+    def update_master_volume(self, value):
+        self.master_volume_value = value
+
+        for name, player in self.active_players.items():
+            track_volume = self.tracks[name]['volume'].get()
+            adjusted_volume = int(track_volume * value * 100)
+            player.audio_set_volume(adjusted_volume)
 
     def force_draw_waveform(self, name):
         try:
@@ -512,11 +536,14 @@ class AudioPlayer:
             temp_file = track['data']['temp_file']
             volume_val = track['volume'].get()
 
+            # Учитываем общую громкость
+            adjusted_volume = volume_val * self.master_volume_value
+
             media = self.vlc_instance.media_new(temp_file)
             player = self.vlc_instance.media_player_new()
             player.set_media(media)
 
-            player.audio_set_volume(int(volume_val * 100))
+            player.audio_set_volume(int(adjusted_volume * 100))
 
             player.play()
             self.active_players[name.lower()] = player
@@ -529,6 +556,11 @@ class AudioPlayer:
             print(f"Ошибка при воспроизведении трека {name}: {e}")
             import traceback
             traceback.print_exc()
+
+    def update_volume(self, name, value):
+        if name.lower() in self.active_players:
+            adjusted_volume = value * self.master_volume_value
+            self.active_players[name.lower()].audio_set_volume(int(adjusted_volume * 100))
 
     def update_position(self, name):
         if name in self.active_players and self.playing:
@@ -546,10 +578,6 @@ class AudioPlayer:
                                                     x_pos, 0, x_pos, self.waveform_canvases[name].winfo_height())
 
             self.root.after(50, lambda: self.update_position(name))
-
-    def update_volume(self, name, value):
-        if name.lower() in self.active_players:
-            self.active_players[name.lower()].audio_set_volume(int(value * 100))
 
     def play_all(self):
         if not self.playing:

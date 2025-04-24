@@ -6,8 +6,8 @@ python-vlc
 requests
 demucs
 matplotlib
+ml_collections
 pillow
-io
 rotary_embedding_torch
 beartype
 einops

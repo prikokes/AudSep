@@ -690,6 +690,7 @@ class HTDemucs(nn.Module):
         else:
             xt = xt.view(B, S, -1, length)
         xt = xt * stdt[:, None] + meant[:, None]
+        x = x.to(self.encoder[0].conv.weight.device)
         x = xt + x
         if length_pre_pad:
             x = x[..., :length_pre_pad]
