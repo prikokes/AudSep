@@ -12,7 +12,6 @@ def demix_track_demucs(config, model, mix, device, pbar=False, progress_bar=None
     batch_size = config.inference.batch_size
     step = C // N
 
-    # Предполагаем, что mix уже находится на нужном устройстве
     with torch.cuda.amp.autocast(enabled=config.training.use_amp):
         with torch.inference_mode():
             req_shape = (S,) + tuple(mix.shape)
@@ -48,21 +47,17 @@ def demix_track_demucs(config, model, mix, device, pbar=False, progress_bar=None
                         result[..., start:start + l] += x[j][..., :l]
                         counter[..., start:start + l] += 1.
 
-                    # Очищаем переменные для экономии памяти
                     del arr, x, batch_data, batch_locations
                     batch_data = []
                     batch_locations = []
 
-                    # Явно освобождаем кеш
                     if str(device).startswith('mps'):
                         torch.mps.empty_cache()
                     elif str(device).startswith('cuda'):
                         torch.cuda.empty_cache()
 
-            # Выполняем расчеты на том же устройстве
             result = result / counter
 
-            # Заменяем NaN значения нулями непосредственно в тензоре
             result = torch.nan_to_num(result, nan=0.0)
 
     if S > 1:

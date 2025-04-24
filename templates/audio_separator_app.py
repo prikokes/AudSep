@@ -125,7 +125,7 @@ class AudioSeparatorApp(ctk.CTk):
         self.process_button = ctk.CTkButton(
             self.main_frame,
             text="Разделить",
-            command=self._separate_audio,
+            command=self.process_audio,
             state="disabled"
         )
         self.process_button.pack(pady=10, padx=20)
@@ -209,7 +209,7 @@ class AudioSeparatorApp(ctk.CTk):
         self.select_button.configure(state="disabled")
         self.process_button.configure(state="disabled")
 
-        self.update()
+        self.status_label.configure(text="Подготовка...")
 
         thread = threading.Thread(target=self._process_audio_thread)
         thread.daemon = True
@@ -217,16 +217,30 @@ class AudioSeparatorApp(ctk.CTk):
 
     def _process_audio_thread(self):
         try:
-            self.after(0, lambda: self.status_label.configure(text="Разделяем"))
-            self.progress_bar.set(0)
+            self.after(0, lambda: self.status_label.configure(text="Загрузка аудио..."))
+            mix, sample_rate = torchaudio.load(self.selected_file)
 
-            self._separate_audio()
+            selected_model_name = self.model_var.get()
+            model_info = self.available_models[selected_model_name]
 
-            self.progress_bar.set(1)
-            self.after(0, lambda: self.status_label.configure(text="Готово"))
+            self.after(0, lambda: self.status_label.configure(text=f"Обработка с помощью {selected_model_name}..."))
+
+            device = model_info["device"]
+            processor = model_info["processor"]
+
+            if str(device) == "mps":
+                torch.mps.empty_cache()
+
+            mix = mix.to(device)
+            self.separated_tracks = processor(mix, sample_rate, device, model_info)
+
+            self.after(0, lambda: self.progress_bar.set(1))
+            self.after(0, lambda: self.status_label.configure(text="Готово!"))
+            self.after(0, self.open_player)
         except Exception as e:
-            print(e)
-            self.after(0, lambda: self.status_label.configure(text=f"Ошибка: {e}"))
+            import traceback
+            traceback.print_exc()
+            self.after(0, lambda: self.status_label.configure(text=f"Ошибка: {str(e)}"))
         finally:
             self.is_processing = False
             self.after(0, lambda: self.select_button.configure(state="normal"))
