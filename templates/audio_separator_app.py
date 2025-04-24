@@ -7,6 +7,7 @@ import torch
 import torchaudio
 import threading
 import yaml
+import os
 
 from pathlib import Path
 
@@ -20,11 +21,14 @@ from .audio_player import (AudioPlayer)
 
 from model_loaders.mel_band_roformer_loader import MelBandRoformerLoader
 from utils.demix_track import demix_track
+from model_loaders.bs_roformer_loader import BSRoformerLoader
 
 
 class AudioSeparatorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+        os.environ['PYTORCH_MPS_HIGH_WATERMARK_RATIO'] = '0.0'
         self.title("AudSep")
         self.geometry("800x600")
 
@@ -50,13 +54,22 @@ class AudioSeparatorApp(ctk.CTk):
                 "loader": htdemucs_loader.HTDemucsLoader(),
                 "config": "./configs/config_htdemucs_6stems.yaml",
                 "model_id": "6s",
-                "processor": self._process_htdemucs
+                "processor": self._process_htdemucs,
+                "description": "HTDemucs - базовая модель разделения аудио на отдельные компоненты."
             },
             "MelBand RoFormer": {
                 "loader": MelBandRoformerLoader,
                 "config": "./configs/config_vocals_mel_band_roformer_kj.yaml",
                 "model_id": "base",
-                "processor": self._process_melband_roformer
+                "processor": self._process_melband_roformer,
+                "description": "MelBandRoformer - модель для выделения вокала из аудио."
+            },
+            "BS RoFormer": {
+                "loader": BSRoformerLoader,
+                "config": "./configs/config_bs_roformer.yaml",
+                "model_id": "bs",
+                "processor": self._process_bs_roformer,
+                "description": "Band-Split RoFormer модель для более точного разделения аудио на отдельные компоненты."
             }
         }
 
@@ -67,6 +80,26 @@ class AudioSeparatorApp(ctk.CTk):
             variable=self.model_var
         )
         self.model_dropdown.pack(side="left", fill="x", expand=True)
+
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif hasattr(torch, 'mps') and hasattr(torch.mps, 'is_available') and torch.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
+
+        print(self.device)
+
+        # self.device = 'cpu'
+        print(f"Доступная память MPS: {torch.mps.current_allocated_memory() :.2f}GB")
+
+        self.models_info_button = ctk.CTkButton(
+            self.model_frame,
+            text="?",
+            width=30,
+            command=self.show_models_info
+        )
+        self.models_info_button.pack(side="right", padx=(10, 0))
 
         self.select_button = ctk.CTkButton(
             self.main_frame,
@@ -120,6 +153,50 @@ class AudioSeparatorApp(ctk.CTk):
         except Exception as e:
             self.status_label.configure(text=f"Ошибка при выборе файла: {str(e)}")
 
+    def show_models_info(self):
+        info_window = ctk.CTkToplevel(self)
+        info_window.title("Информация о моделях")
+        info_window.geometry("600x400")
+        info_window.grab_set()
+
+        info_frame = ctk.CTkScrollableFrame(info_window)
+        info_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        title_label = ctk.CTkLabel(
+            info_frame,
+            text="Доступные модели для разделения аудио:",
+            font=("Arial", 16, "bold")
+        )
+        title_label.pack(pady=(0, 20), anchor="w")
+
+        for model_name, model_info in self.available_models.items():
+            model_frame = ctk.CTkFrame(info_frame)
+            model_frame.pack(fill="x", pady=10)
+
+            name_label = ctk.CTkLabel(
+                model_frame,
+                text=model_name,
+                font=("Arial", 14, "bold"),
+                anchor="w"
+            )
+            name_label.pack(fill="x", padx=10, pady=(10, 5))
+
+            desc_label = ctk.CTkLabel(
+                model_frame,
+                text=model_info.get("description", "Нет описания"),
+                wraplength=550,
+                anchor="w",
+                justify="left"
+            )
+            desc_label.pack(fill="x", padx=10, pady=(0, 10))
+
+        close_button = ctk.CTkButton(
+            info_window,
+            text="Закрыть",
+            command=info_window.destroy
+        )
+        close_button.pack(pady=(0, 20))
+
     def process_audio(self):
         if self.is_processing:
             return
@@ -153,13 +230,15 @@ class AudioSeparatorApp(ctk.CTk):
 
     def _separate_audio(self):
         mix, sample_rate = torchaudio.load(self.selected_file)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         selected_model_name = self.model_var.get()
         model_info = self.available_models[selected_model_name]
 
         processor = model_info["processor"]
-        self.separated_tracks = processor(mix, sample_rate, device, model_info)
+
+        mix = mix.to(self.device)
+        torch.mps.empty_cache()
+        self.separated_tracks = processor(mix, sample_rate, self.device, model_info)
 
         self.open_player()
 
@@ -170,7 +249,8 @@ class AudioSeparatorApp(ctk.CTk):
 
         model = loader.load(model_info["model_id"], device, config)
 
-        waveform = demix_track_demucs(config, model, mix, device, pbar=False, progress_bar=self.progress_bar)
+        mix = mix.to(self.device)
+        waveform = demix_track_demucs(config, model, mix, self.device, pbar=False, progress_bar=self.progress_bar)
 
         tracks = {}
         for stem in config.training.instruments:
@@ -184,20 +264,40 @@ class AudioSeparatorApp(ctk.CTk):
         with open(model_info['config'], 'r') as f:
             config_dict = yaml.load(f, Loader=yaml.SafeLoader)
 
-        print("I am here")
-
         config = ConfigDict(config_dict)
 
         loader = model_info["loader"]()
         model = loader.load(model_info["model_id"], device, config)
 
-        waveform = demix_track(config, model, mix, device, pbar=False)
+        mix = mix.to(self.device)
+        waveform = demix_track(config, model, mix, self.device, pbar=False)
 
         tracks = {}
         for stem in waveform.keys():
             tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
 
         return tracks
+
+    def _process_bs_roformer(self, mix, sample_rate, device, model_info):
+        self.status_label.configure(text="Загрузка BS RoFormer...")
+
+        with open(model_info['config'], 'r') as f:
+            config_dict = yaml.load(f, Loader=yaml.SafeLoader)
+
+        config = ConfigDict(config_dict)
+
+        loader = model_info["loader"]()
+        model = loader.load(model_info["model_id"], device, config)
+
+        mix = mix.to(self.device)
+        waveform = demix_track(config, model, mix, self.device, pbar=False)
+
+        tracks = {}
+        for stem in waveform.keys():
+            tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
+
+        return tracks
+
 
     def open_player(self):
         def create_player():

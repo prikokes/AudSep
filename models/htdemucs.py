@@ -606,6 +606,7 @@ class HTDemucs(nn.Module):
                     # tenc contains just the first conv., so that now time and freq.
                     # branches have the same shape and can be merged.
                     inject = xt
+            x = x.to(self.encoder[0].conv.weight.device)
             x = encode(x, inject)
             # print("Encode X {}: {}".format(idx, x.shape))
             if idx == 0 and self.freq_emb is not None:
@@ -667,6 +668,8 @@ class HTDemucs(nn.Module):
             # print("X view 2: {}".format(x.shape))
 
         x = x.view(B, S, -1, Fq * self.num_subbands, T)
+        std = std.to(self.encoder[0].conv.weight.device)
+        mean = mean.to(self.encoder[0].conv.weight.device)
         x = x * std[:, None] + mean[:, None]
         # print("X returned: {}".format(x.shape))
 

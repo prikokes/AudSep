@@ -53,6 +53,8 @@ class HTDemucsLoader:
             if 'state_dict' in state_dict:
                 state_dict = state_dict['state_dict']
 
+
+            model = model.to(device)
             model.load_state_dict(state_dict)
 
             return model
