@@ -8,35 +8,52 @@ import requests
 import yaml
 
 from models.bs_roformer import BSRoformer
+from utils.user_data import get_weights_dir
+from utils.path_utils import get_resource_path
 
 
 class BSRoformerLoader:
-    WEIGHTS_PATH = './weights/bs_roformer.ckpt'
+    WEIGHTS_FILENAME = 'bs_roformer.ckpt'
     WEIGHTS_URL = 'https://github.com/ZFTurbo/Music-Source-Separation-Training/releases/download/v1.0.12/model_bs_roformer_ep_17_sdr_9.6568.ckpt'
 
     def __init__(self):
-        pass
+        self._initialize_paths()
+
+    def _initialize_paths(self):
+        user_weights_dir = get_weights_dir()
+        self.weights_path = os.path.join(user_weights_dir, self.WEIGHTS_FILENAME)
 
     @staticmethod
     def download_weights():
-        os.makedirs('./weights', exist_ok=True)
+        user_weights_dir = get_weights_dir()
+        weights_path = os.path.join(user_weights_dir, BSRoformerLoader.WEIGHTS_FILENAME)
+
+        print(f"Downloading weights to: {weights_path}")
+
+        os.makedirs(user_weights_dir, exist_ok=True)
 
         response = requests.get(BSRoformerLoader.WEIGHTS_URL, stream=True)
         total_size = int(response.headers.get('content-length', 0))
 
-        with open(BSRoformerLoader.WEIGHTS_PATH, 'wb') as file:
+        with open(weights_path, 'wb') as file:
             file.write(response.content)
+
+        print(f"Downloaded weights to: {weights_path}")
+        return weights_path
 
     def load(self, type_, device, config):
         if type_ == 'bs':
-            if not os.path.exists(BSRoformerLoader.WEIGHTS_PATH):
+            if not hasattr(self, 'weights_path'):
+                self._initialize_paths()
+
+            if not os.path.exists(self.weights_path):
                 BSRoformerLoader.download_weights()
 
             model = BSRoformer(
                 **dict(config.model)
             )
 
-            state_dict = torch.load(BSRoformerLoader.WEIGHTS_PATH, map_location=device, weights_only=False)
+            state_dict = torch.load(self.weights_path, map_location=device, weights_only=False)
             if 'state' in state_dict:
                 state_dict = state_dict['state']
             if 'state_dict' in state_dict:

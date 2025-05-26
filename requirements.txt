@@ -1,7 +1,7 @@
 torch==2.6.0
 torchaudio==2.6.0
 soundfile
-customtkinter
+pyqt5
 python-vlc
 requests
 demucs
@@ -12,4 +12,4 @@ rotary_embedding_torch
 beartype
 einops
 librosa
-yaml
+PyYAML

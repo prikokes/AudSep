@@ -1,5 +1,5 @@
 audio:
-  chunk_size: 485100
+  chunk_size: 121275 # 242550
   dim_f: 1024
   dim_t: 801 # don't work (use in model)
   hop_length: 441 # don't work (use in model)

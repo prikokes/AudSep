@@ -1,5 +1,5 @@
 audio:
-  chunk_size: 352800
+  chunk_size: 121275 # 352800
   dim_f: 1024
   dim_t: 256
   hop_length: 441
