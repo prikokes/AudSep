@@ -15,6 +15,10 @@ import yaml
 import os
 import mimetypes
 import time
+import gc
+import signal
+import multiprocessing
+import pickle
 
 from pathlib import Path
 
@@ -174,7 +178,214 @@ QWidget#centralWidget {
 """
 
 
-class ProcessingThread(QThread):
+class ProgressReporter:
+    def __init__(self, progress_queue, cancel_event):
+        self.progress_queue = progress_queue
+        self.cancel_event = cancel_event
+
+    def update_progress(self, progress):
+        try:
+            self.progress_queue.put(("progress", min(100, max(0, int(progress)))))
+        except:
+            pass
+
+    def update_status(self, status):
+        try:
+            self.progress_queue.put(("status", str(status)))
+        except:
+            pass
+
+    def is_cancelled(self):
+        return self.cancel_event.is_set()
+
+    def emit(self, value):
+        self.update_progress(value)
+
+
+def processing_worker(audio_file, model_info, progress_queue, result_queue, cancel_event):
+    try:
+        def signal_handler(signum, frame):
+            print(f"Процесс получил сигнал {signum}, завершаемся...")
+            try:
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                if hasattr(torch, 'mps') and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+            except:
+                pass
+            os._exit(0)
+
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+
+        progress_reporter = ProgressReporter(progress_queue, cancel_event)
+
+        if cancel_event.is_set():
+            return
+
+        progress_reporter.update_status("Загрузка аудио...")
+        # progress_reporter.update_progress(5)
+
+        mix, sample_rate = torchaudio.load(audio_file)
+        print(f"Аудио загружено: {mix.shape}")
+
+        if cancel_event.is_set():
+            return
+
+        progress_reporter.update_status("Подготовка модели...")
+        # progress_reporter.update_progress(10)
+
+        if model_info["processor"] == "_process_htdemucs":
+            if cancel_event.is_set():
+                return
+
+            progress_reporter.update_status("Загрузка модели HTDemucs...")
+            # progress_reporter.update_progress(15)
+
+            loader = htdemucs_loader.HTDemucsLoader()
+            config = OmegaConf.load(get_resource_path(model_info["config"]))
+            model = loader.load(model_info["model_id"], model_info["device"], config)
+
+            if cancel_event.is_set():
+                return
+
+            progress_reporter.update_status("Обработка аудио...")
+            # progress_reporter.update_progress(25)
+
+            mix = mix.to(model_info["device"])
+
+            if cancel_event.is_set():
+                return
+
+            waveform = demix_track_demucs(
+                config,
+                model,
+                mix,
+                model_info["device"],
+                pbar=False,
+                progress_bar=progress_reporter
+            )
+
+            if cancel_event.is_set():
+                return
+
+            progress_reporter.update_status("Формирование результата...")
+            # progress_reporter.update_progress(95)
+
+            tracks = {}
+            for stem in config.training.instruments:
+                if cancel_event.is_set():
+                    return
+                tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
+
+            result_queue.put(("success", tracks))
+
+        elif model_info["processor"] == "_process_melband_roformer":
+            if cancel_event.is_set():
+                return
+
+            progress_reporter.update_status("Загрузка модели MelBand RoFormer...")
+            # progress_reporter.update_progress(15)
+
+            with open(get_resource_path(model_info["config"]), 'r') as f:
+                config_dict = yaml.load(f, Loader=yaml.SafeLoader)
+            config = ConfigDict(config_dict)
+
+            loader = MelBandRoformerLoader()
+            model = loader.load(model_info["model_id"], model_info["device"], config)
+
+            if cancel_event.is_set():
+                return
+
+            progress_reporter.update_status("Обработка аудио...")
+            # progress_reporter.update_progress(25)
+
+            mix = mix.to(model_info["device"])
+
+            if cancel_event.is_set():
+                return
+
+            waveform = demix_track(
+                config,
+                model,
+                mix,
+                model_info["device"],
+                pbar=False,
+                progress_bar=progress_reporter
+            )
+
+            if cancel_event.is_set():
+                return
+
+            progress_reporter.update_status("Формирование результата...")
+            # progress_reporter.update_progress(95)
+
+            tracks = {}
+            for stem in waveform.keys():
+                if cancel_event.is_set():
+                    return
+                tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
+
+            result_queue.put(("success", tracks))
+
+        elif model_info["processor"] == "_process_bs_roformer":
+            if cancel_event.is_set():
+                return
+
+            progress_reporter.update_status("Загрузка модели BS RoFormer...")
+            # progress_reporter.update_progress(15)
+
+            with open(get_resource_path(model_info["config"]), 'r') as f:
+                config_dict = yaml.load(f, Loader=yaml.SafeLoader)
+            config = ConfigDict(config_dict)
+
+            loader = BSRoformerLoader()
+            model = loader.load(model_info["model_id"], model_info["device"], config)
+
+            if cancel_event.is_set():
+                return
+
+            progress_reporter.update_status("Обработка аудио...")
+            # progress_reporter.update_progress(25)
+
+            mix = mix.to(model_info["device"])
+
+            if cancel_event.is_set():
+                return
+
+            waveform = demix_track(
+                config,
+                model,
+                mix,
+                model_info["device"],
+                pbar=False,
+                progress_bar=progress_reporter
+            )
+
+            if cancel_event.is_set():
+                return
+
+            progress_reporter.update_status("Формирование результата...")
+            # progress_reporter.update_progress(95)
+
+            tracks = {}
+            for stem in waveform.keys():
+                if cancel_event.is_set():
+                    return
+                tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
+
+            result_queue.put(("success", tracks))
+
+        progress_reporter.update_progress(100)
+        progress_reporter.update_status("Готово!")
+
+    except Exception as e:
+        if not cancel_event.is_set():
+            result_queue.put(("error", str(e)))
+        else:
+            print("Процесс был отменен во время исключения")
+
+
+class ProcessMonitoringThread(QThread):
     update_status = pyqtSignal(str)
     update_progress = pyqtSignal(int)
     processing_finished = pyqtSignal(dict)
@@ -187,111 +398,124 @@ class ProcessingThread(QThread):
         self.model_info = model_info
         self.device = device
         self._is_cancelled = False
-        self._mutex = QMutex()
-        self._should_stop = False
+        self._process = None
+        self._cancel_event = None
 
-        self.setTerminationEnabled(True)
+        self._force_kill_timer = QTimer()
+        self._force_kill_timer.timeout.connect(self._force_kill_process)
+        self._force_kill_timer.setSingleShot(True)
 
     def cancel(self):
-        self._mutex.lock()
+        print("Запрос отмены - завершаем процесс")
         self._is_cancelled = True
-        self._should_stop = True
-        self._mutex.unlock()
-        self.update_status.emit("Отмена обработки...")
+        self.update_status.emit("Отменяется...")
 
-    def is_cancelled(self):
-        self._mutex.lock()
-        cancelled = self._is_cancelled
-        self._mutex.unlock()
-        return cancelled
+        if self._cancel_event:
+            self._cancel_event.set()
 
-    def should_stop(self):
-        self._mutex.lock()
-        stop = self._should_stop
-        self._mutex.unlock()
-        return stop
+        self._force_kill_timer.start(2000)
+
+        if self._process and self._process.is_alive():
+            print("Отправляем сигнал SIGTERM")
+            try:
+                self._process.terminate()
+            except:
+                pass
+
+    def _force_kill_process(self):
+        if self._process and self._process.is_alive():
+            print("Принудительное уничтожение процесса")
+            try:
+                self._process.kill()
+                self._process.join(timeout=1)
+            except:
+                pass
+
+        if not self._is_cancelled:
+            self._is_cancelled = True
+            self.processing_cancelled.emit()
 
     def run(self):
         try:
-            if self.should_stop():
+            progress_queue = multiprocessing.Queue()
+            result_queue = multiprocessing.Queue()
+            self._cancel_event = multiprocessing.Event()
+
+            model_info_serializable = {
+                "config": self.model_info["config"],
+                "model_id": self.model_info["model_id"],
+                "device": self.model_info["device"],
+                "processor": self.model_info["processor"].__name__ if hasattr(self.model_info["processor"], '__name__') else str(self.model_info["processor"])
+            }
+
+            self._process = multiprocessing.Process(
+                target=processing_worker,
+                args=(str(self.audio_file), model_info_serializable, progress_queue, result_queue, self._cancel_event)
+            )
+
+            print("Запускаем процесс обработки")
+            self._process.start()
+
+            while self._process.is_alive() and not self._is_cancelled:
+                try:
+                    while not progress_queue.empty():
+                        msg_type, data = progress_queue.get_nowait()
+                        if msg_type == "status":
+                            self.update_status.emit(data)
+                        elif msg_type == "progress":
+                            # self.update_progress.emit(data)
+                            pass
+                except:
+                    pass
+
+                try:
+                    if not result_queue.empty():
+                        result_type, data = result_queue.get_nowait()
+                        if result_type == "success":
+                            print("Процесс завершился успешно")
+                            self._force_kill_timer.stop()
+                            self.processing_finished.emit(data)
+                            return
+                        elif result_type == "error":
+                            print(f"Ошибка в процессе: {data}")
+                            self._force_kill_timer.stop()
+                            self.processing_error.emit(data)
+                            return
+                except:
+                    pass
+
+                self.msleep(100)
+
+            if self._is_cancelled:
+                print("Обработка отменена")
                 self.processing_cancelled.emit()
-                return
-
-            self.update_status.emit("Загрузка аудио...")
-            self.update_progress.emit(10)
-
-            if self.should_stop():
-                self.processing_cancelled.emit()
-                return
-
-            try:
-                mix, sample_rate = torchaudio.load(self.audio_file)
-            except Exception as e:
-                if not self.should_stop():
-                    self.processing_error.emit(f"Ошибка загрузки аудио: {str(e)}")
-                return
-
-            if self.should_stop():
-                self.processing_cancelled.emit()
-                return
-
-            self.update_status.emit(f"Обработка с помощью {self.model_info['description']}...")
-            self.update_progress.emit(30)
-
-            device = self.model_info["device"]
-            processor = self.model_info["processor"]
-
-            if str(device) == "mps":
-                torch.mps.empty_cache()
-
-            if self.should_stop():
-                self.processing_cancelled.emit()
-                return
-
-            try:
-                mix = mix.to(device)
-            except Exception as e:
-                if not self.should_stop():
-                    self.processing_error.emit(f"Ошибка перевода на устройство: {str(e)}")
-                return
-
-            if self.should_stop():
-                self.processing_cancelled.emit()
-                return
-
-            try:
-                separated_tracks = processor(mix, sample_rate, device, self.model_info, self)
-            except Exception as e:
-                if not self.should_stop():
-                    self.processing_error.emit(f"Ошибка обработки: {str(e)}")
-                return
-
-            if self.should_stop():
-                self.processing_cancelled.emit()
-                return
-
-            if separated_tracks:
-                self.update_progress.emit(100)
-                self.update_status.emit("Готово!")
-                self.processing_finished.emit(separated_tracks)
             else:
-                self.processing_cancelled.emit()
+                if self._process.exitcode != 0:
+                    self.processing_error.emit("Процесс завершился с ошибкой")
+                else:
+                    self.processing_cancelled.emit()
 
         except Exception as e:
-            if not self.should_stop():
-                import traceback
-                traceback.print_exc()
+            print(f"Ошибка в мониторинге: {e}")
+            if not self._is_cancelled:
                 self.processing_error.emit(str(e))
             else:
                 self.processing_cancelled.emit()
+        finally:
+            if self._process and self._process.is_alive():
+                self._process.terminate()
+                self._process.join(timeout=2)
+                if self._process.is_alive():
+                    self._process.kill()
+
+            self._force_kill_timer.stop()
 
     def stop_thread(self):
+        print("Останавливаем мониторинг...")
         self.cancel()
-
-        if not self.wait(3000):
-            print("Принудительное завершение потока...")
+        self.wait(5000)
+        if self.isRunning():
             self.terminate()
-            self.wait(1000)
 
 
 class DropZone(QFrame):
@@ -379,7 +603,7 @@ class DropZone(QFrame):
                 self.setProperty("active", "false")
                 self.style().unpolish(self)
                 self.style().polish(self)
-                self.drop_label.setText("✅\n\nФайл загружен успешно!")
+                self.drop_label.setText("\n\nФайл загружен успешно!")
                 self.drop_label.setStyleSheet("""
                     QLabel {
                         color: #28A745;
@@ -515,10 +739,13 @@ class AudioSeparatorApp(QMainWindow):
         else:
             self.device = torch.device("cpu")
 
-        print(self.device)
+        print(f"Используется устройство: {self.device}")
 
-        self.device = 'cpu'
-        print(f"Доступная память MPS: {torch.mps.current_allocated_memory() / (1024 ** 3):.2f}GB")
+        if str(self.device) == "mps":
+            try:
+                print(f"Доступная память MPS: {torch.mps.current_allocated_memory() / (1024 ** 3):.2f}GB")
+            except:
+                print("Не удалось получить информацию о памяти MPS")
 
         self.available_models = {
             "HTDemucs (6 стемов)": {
@@ -527,7 +754,7 @@ class AudioSeparatorApp(QMainWindow):
                 "model_id": "6s",
                 "processor": self._process_htdemucs,
                 "description": "HTDemucs - базовая модель разделения аудио на отдельные компоненты.",
-                "device": "cpu"
+                "device": 'cpu'
             },
             "MelBand RoFormer": {
                 "loader": MelBandRoformerLoader,
@@ -535,7 +762,7 @@ class AudioSeparatorApp(QMainWindow):
                 "model_id": "base",
                 "processor": self._process_melband_roformer,
                 "description": "MelBandRoformer - модель для выделения вокала из аудио.",
-                "device": self.device
+                "device": 'cpu'
             },
             "BS RoFormer": {
                 "loader": BSRoformerLoader,
@@ -626,6 +853,7 @@ class AudioSeparatorApp(QMainWindow):
                 event.ignore()
                 return
 
+            print("Принудительно завершаем обработку при закрытии")
             self.processing_thread.stop_thread()
 
         event.accept()
@@ -726,13 +954,12 @@ class AudioSeparatorApp(QMainWindow):
         selected_model_name = self.model_dropdown.currentText()
         model_info = self.available_models[selected_model_name]
 
-        self.processing_thread = ProcessingThread(self.selected_file, model_info, self.device)
+        self.processing_thread = ProcessMonitoringThread(self.selected_file, model_info, self.device)
         self.processing_thread.update_status.connect(self.update_status)
         self.processing_thread.update_progress.connect(self.progress_bar.setValue)
         self.processing_thread.processing_finished.connect(self.processing_complete)
         self.processing_thread.processing_error.connect(self.processing_error)
         self.processing_thread.processing_cancelled.connect(self.processing_cancelled)
-
         self.processing_thread.finished.connect(self.thread_finished)
 
         self.processing_thread.start()
@@ -744,18 +971,20 @@ class AudioSeparatorApp(QMainWindow):
 
     def cancel_processing(self):
         if self.processing_thread and self.processing_thread.isRunning():
-            reply = QMessageBox.question(
-                self,
-                "Подтверждение отмены",
-                "Вы уверены, что хотите отменить обработку?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
+            print("Немедленная отмена обработки")
 
-            if reply == QMessageBox.Yes:
-                self.cancel_button.setEnabled(False)
-                self.cancel_button.setText("Отменяется...")
-                self.processing_thread.cancel()
+            self.cancel_button.setEnabled(False)
+            self.cancel_button.setText("Отменяется...")
+            self.status_label.setText("Принудительная остановка...")
+
+            self.processing_thread.cancel()
+
+            QTimer.singleShot(1000, self.force_reset_ui)
+
+    def force_reset_ui(self):
+        if self.is_processing:
+            print("Принудительный сброс UI")
+            self.processing_cancelled()
 
     def update_status(self, message):
         self.status_label.setText(message)
@@ -796,103 +1025,13 @@ class AudioSeparatorApp(QMainWindow):
         self.cancel_button.setText("Отмена")
 
     def _process_htdemucs(self, mix, sample_rate, device, model_info, thread=None):
-        try:
-            loader = model_info["loader"]
-            config = OmegaConf.load(get_resource_path(model_info["config"]))
-
-            if thread and thread.should_stop():
-                return {}
-
-            model = loader.load(model_info["model_id"], model_info["device"], config)
-
-            if thread and thread.should_stop():
-                return {}
-
-            mix = mix.to(model_info["device"])
-            waveform = demix_track_demucs(config, model, mix, model_info["device"], pbar=False)
-
-            if thread and thread.should_stop():
-                return {}
-
-            tracks = {}
-            for stem in config.training.instruments:
-                if thread and thread.should_stop():
-                    return {}
-                tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
-
-            return tracks
-        except Exception as e:
-            if thread and not thread.should_stop():
-                raise e
-            return {}
+        pass
 
     def _process_melband_roformer(self, mix, sample_rate, device, model_info, thread=None):
-        try:
-            with open(get_resource_path(model_info["config"]), 'r') as f:
-                config_dict = yaml.load(f, Loader=yaml.SafeLoader)
-
-            config = ConfigDict(config_dict)
-
-            if thread and thread.should_stop():
-                return {}
-
-            loader = model_info["loader"]()
-            model = loader.load(model_info["model_id"], model_info["device"], config)
-
-            if thread and thread.should_stop():
-                return {}
-
-            mix = mix.to(model_info["device"])
-            waveform = demix_track(config, model, mix, model_info["device"], pbar=False)
-
-            if thread and thread.should_stop():
-                return {}
-
-            tracks = {}
-            for stem in waveform.keys():
-                if thread and thread.should_stop():
-                    return {}
-                tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
-
-            return tracks
-        except Exception as e:
-            if thread and not thread.should_stop():
-                raise e
-            return {}
+        pass
 
     def _process_bs_roformer(self, mix, sample_rate, device, model_info, thread=None):
-        try:
-            with open(get_resource_path(model_info["config"]), 'r') as f:
-                config_dict = yaml.load(f, Loader=yaml.SafeLoader)
-
-            config = ConfigDict(config_dict)
-
-            if thread and thread.should_stop():
-                return {}
-
-            loader = model_info["loader"]()
-            model = loader.load(model_info["model_id"], model_info["device"], config)
-
-            if thread and thread.should_stop():
-                return {}
-
-            mix = mix.to(model_info["device"])
-            waveform = demix_track(config, model, mix, model_info["device"], pbar=False)
-
-            if thread and thread.should_stop():
-                return {}
-
-            tracks = {}
-            for stem in waveform.keys():
-                if thread and thread.should_stop():
-                    return {}
-                tracks[stem] = {'data': torch.tensor(waveform[stem]).float(), 'sr': sample_rate}
-
-            return tracks
-        except Exception as e:
-            if thread and not thread.should_stop():
-                raise e
-            return {}
+        pass
 
     def open_player(self):
         player_dialog = QDialog(self)

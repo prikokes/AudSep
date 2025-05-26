@@ -10,6 +10,8 @@ from pathlib import Path
 from templates.audio_separator_app import AudioSeparatorApp
 from PyQt5.QtWidgets import QApplication
 
+import multiprocessing
+
 from utils.user_data import get_user_data_dir, get_weights_dir
 
 
@@ -23,6 +25,12 @@ def initialize_app_directories():
 
 
 if __name__ == '__main__':
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        # Если уже установлен, игнорируем
+        pass
+
     initialize_app_directories()
     app = QApplication(sys.argv)
     window = AudioSeparatorApp()

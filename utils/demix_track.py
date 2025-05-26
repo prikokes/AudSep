@@ -8,7 +8,7 @@ from typing import List
 from tqdm.auto import tqdm
 
 
-def demix_track(config, model, mix, device, pbar=False):
+def demix_track(config, model, mix, device, pbar=False, progress_bar=None):
     C = config.audio.chunk_size
     N = config.inference.num_overlap
     fade_size = C // 10
@@ -34,10 +34,16 @@ def demix_track(config, model, mix, device, pbar=False):
             i = 0
             batch_data = []
             batch_locations = []
-            progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+
+            total_iterations = (mix.shape[1] + step - 1) // step
+            current_iteration = 0
 
             while i < mix.shape[1]:
                 # print(i, i + C, mix.shape[1])
+                if progress_bar:
+                    progress_bar.update_progress(min(100.0, int((current_iteration / total_iterations) * 100)))
+                    current_iteration += 1
+
                 part = mix[:, i:i + C].to(device)
                 length = part.shape[-1]
                 if length < C:
@@ -68,12 +74,6 @@ def demix_track(config, model, mix, device, pbar=False):
 
                     batch_data = []
                     batch_locations = []
-
-                if progress_bar:
-                    progress_bar.update(step)
-
-            if progress_bar:
-                progress_bar.close()
 
             estimated_sources = result / counter
             estimated_sources = estimated_sources.cpu().numpy()

@@ -29,7 +29,7 @@ def demix_track_demucs(config, model, mix, device, pbar=False, progress_bar=None
                 length = part.shape[-1]
 
                 if progress_bar:
-                    progress_bar.set(min(1.0, current_iteration / total_iterations))
+                    progress_bar.update_progress(min(100.0, int((current_iteration / total_iterations) * 100)))
                     current_iteration += 1
 
                 if length < C:
